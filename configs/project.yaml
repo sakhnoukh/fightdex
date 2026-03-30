@@ -1,0 +1,53 @@
+project:
+  name: pokecoach
+  seed: 42
+
+paths:
+  data_root: data
+  smogon_root: data/smogon
+  pokeapi_root: data/pokeapi
+  artifacts_root: artifacts
+  reports_root: reports
+  notebooks_root: notebooks
+
+regulation:
+  train: regg
+  test: regh
+  showdown_tier: gen9vgc2024regg
+
+smogon:
+  months:
+    regg:
+      - "2024-06"
+    regh:
+      - "2024-09"
+  usage_base_url: "https://www.smogon.com/stats/{month}/gen9vgc2024reg{reg}-0.txt"
+  moveset_base_url: "https://www.smogon.com/stats/{month}/moveset/gen9vgc2024reg{reg}-0.txt"
+
+pokeapi:
+  csv_base_url: "https://raw.githubusercontent.com/PokeAPI/pokeapi/master/data/v2/csv"
+  files:
+    - pokemon.csv
+    - pokemon_stats.csv
+    - stats.csv
+    - pokemon_types.csv
+    - types.csv
+    - type_efficacy.csv
+    - pokemon_species.csv
+    - abilities.csv
+    - pokemon_abilities.csv
+
+thresholds:
+  min_usage_pct: 0.5
+
+simulation:
+  sizes:
+    smoke:
+      teams: 10
+      battles_per_team: 5
+    dev:
+      teams: 40
+      battles_per_team: 20
+    final:
+      teams: 200
+      battles_per_team: 50

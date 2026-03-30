@@ -1,0 +1,10 @@
+pandas
+numpy
+scikit-learn
+scipy
+pyyaml
+requests
+tqdm
+streamlit
+pytest
+poke-env

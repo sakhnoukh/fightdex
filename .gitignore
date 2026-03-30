@@ -1,0 +1,19 @@
+# Python cache
+__pycache__/
+*.pyc
+
+# Virtual env
+.venv/
+venv/
+
+# Generated data and outputs
+data/
+artifacts/
+reports/
+Pokemon-Showdown/
+
+# Notebook checkpoints
+.ipynb_checkpoints/
+
+# OS/editor
+.DS_Store
