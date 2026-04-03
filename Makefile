@@ -1,6 +1,6 @@
 PYTHON ?= python3
 
-.PHONY: setup download preprocess evaluate simulate demo-data notebook
+.PHONY: setup download preprocess evaluate simulate tune demo-data notebook
 
 setup:
 	$(PYTHON) -m pip install -r requirements.txt
@@ -16,6 +16,9 @@ evaluate:
 
 simulate:
 	$(PYTHON) -m pokecoach.cli simulate --tier gen9vgc2024regg --mode smoke
+
+tune:
+	$(PYTHON) -m pokecoach.cli tune
 
 demo-data:
 	$(PYTHON) -m pokecoach.cli demo-data

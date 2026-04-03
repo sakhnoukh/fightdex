@@ -19,6 +19,7 @@ from pokecoach.models import build_model_suite, load_model_data
 from pokecoach.notebook_builder import build_notebook
 from pokecoach.preprocess import run_preprocess
 from pokecoach.simulation import run_simulation_sync, simulation_smoke_test_sync
+from pokecoach.tuning import run_tuning
 from pokecoach.utils import write_json
 
 
@@ -86,6 +87,15 @@ def cmd_demo_data(config_path: str) -> None:
     print(f"Demo payload: {out}")
 
 
+def cmd_tune(config_path: str) -> None:
+    cfg = load_config(config_path)
+    ensure_dirs(cfg)
+    outputs = run_tuning(cfg, verbose=True)
+    print("Tuning outputs:")
+    for key, path in outputs.items():
+        print(f"- {key}: {path}")
+
+
 def cmd_make_notebook(config_path: str) -> None:
     cfg = load_config(config_path)
     path = build_notebook(cfg)
@@ -103,6 +113,7 @@ def build_parser() -> argparse.ArgumentParser:
     sim = subparsers.add_parser("simulate", help="Run poke-env simulations.")
     sim.add_argument("--mode", default="smoke", choices=["smoke", "dev", "final"])
     sim.add_argument("--tier", default="gen9vgc2024regg")
+    subparsers.add_parser("tune", help="Run hyperparameter grid search.")
     subparsers.add_parser("demo-data", help="Build demo payload from metrics outputs.")
     subparsers.add_parser("make-notebook", help="Generate notebook scaffold.")
     return parser
@@ -119,6 +130,8 @@ def main() -> None:
         cmd_evaluate(args.config)
     elif args.command == "simulate":
         cmd_simulate(args.config, args.mode, args.tier)
+    elif args.command == "tune":
+        cmd_tune(args.config)
     elif args.command == "demo-data":
         cmd_demo_data(args.config)
     elif args.command == "make-notebook":

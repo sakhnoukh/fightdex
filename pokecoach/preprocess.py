@@ -27,7 +27,9 @@ def build_cooccurrence_matrix(legal: pd.DataFrame, teammates: pd.DataFrame) -> p
         score = float(row["cooccur_pct"]) / 100.0
         matrix.loc[p1, p2] = max(matrix.loc[p1, p2], score)
         matrix.loc[p2, p1] = max(matrix.loc[p2, p1], score)
-    np.fill_diagonal(matrix.values, 1.0)
+    diag = matrix.to_numpy(copy=True)
+    np.fill_diagonal(diag, 1.0)
+    matrix[:] = diag
     return matrix
 
 
