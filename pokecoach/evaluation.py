@@ -116,6 +116,151 @@ def evaluate_reconstruction(
     )
 
 
+@dataclass
+class CVResult:
+    model_name: str
+    n_folds: int
+    hit_rate_5_mean: float
+    hit_rate_5_std: float
+    ndcg_5_mean: float
+    ndcg_5_std: float
+    precision_3_mean: float
+    precision_3_std: float
+    coverage_mean: float
+    coverage_std: float
+
+
+def kfold_cross_validate(
+    model: Recommender,
+    teams_df: pd.DataFrame,
+    counter_matrix: pd.DataFrame,
+    model_name: str,
+    k: int = 5,
+) -> CVResult:
+    """K-fold cross-validation over the reconstruction team dataset.
+
+    Splits the 250 teams into k folds. Each fold is held out as the test set
+    while the remaining folds are used to compute per-fold metrics. Because the
+    models use precomputed Smogon matrices (not the evaluation teams themselves),
+    this does not retrain the model -- it gives stable metric estimates with
+    variance across different subsets of teams.
+    """
+    team_ids = teams_df["team_id"].unique()
+    np.random.seed(42)
+    shuffled = np.random.permutation(team_ids)
+    folds = np.array_split(shuffled, k)
+
+    fold_metrics: dict[str, list[float]] = {
+        "hit_rate_5": [], "ndcg_5": [], "precision_3": [], "coverage": []
+    }
+
+    for fold_ids in folds:
+        fold_df = teams_df[teams_df["team_id"].isin(fold_ids)]
+        result = evaluate_reconstruction(model, fold_df, counter_matrix, model_name=model_name)
+        fold_metrics["hit_rate_5"].append(result.hit_rate_5)
+        fold_metrics["ndcg_5"].append(result.ndcg_5)
+        fold_metrics["precision_3"].append(result.precision_3)
+        fold_metrics["coverage"].append(result.coverage)
+
+    return CVResult(
+        model_name=model_name,
+        n_folds=k,
+        hit_rate_5_mean=float(np.mean(fold_metrics["hit_rate_5"])),
+        hit_rate_5_std=float(np.std(fold_metrics["hit_rate_5"])),
+        ndcg_5_mean=float(np.mean(fold_metrics["ndcg_5"])),
+        ndcg_5_std=float(np.std(fold_metrics["ndcg_5"])),
+        precision_3_mean=float(np.mean(fold_metrics["precision_3"])),
+        precision_3_std=float(np.std(fold_metrics["precision_3"])),
+        coverage_mean=float(np.mean(fold_metrics["coverage"])),
+        coverage_std=float(np.std(fold_metrics["coverage"])),
+    )
+
+
+def build_temporal_teams(artifacts_root: Path, regulation: str = "regh", top_n: int = 36) -> pd.DataFrame:
+    """Build a leave-one-out evaluation dataset from a given regulation's usage data.
+
+    Mirrors how reconstruction_teams.csv was built for RegG, but uses the
+    specified regulation so we can evaluate temporal generalization.
+    """
+    usage_path = artifacts_root / "smogon" / f"{regulation}_usage.csv"
+    teammates_path = artifacts_root / "smogon" / f"{regulation}_teammates.csv"
+
+    if not usage_path.exists() or not teammates_path.exists():
+        raise FileNotFoundError(
+            f"Missing smogon data for regulation '{regulation}'. "
+            f"Expected {usage_path} and {teammates_path}."
+        )
+
+    usage = pd.read_csv(usage_path)
+    teammates = pd.read_csv(teammates_path)
+
+    top_pokemon = (
+        usage.sort_values("usage_pct", ascending=False)
+        .head(top_n)["pokemon"]
+        .tolist()
+    )
+
+    # Build teams: for each top Pokemon, find its top 5 most common teammates
+    # that are also in the top pool to form realistic 6-mon teams
+    rows = []
+    team_id = 1
+    for anchor in top_pokemon:
+        anchor_mates = (
+            teammates[teammates["pokemon"] == anchor]
+            .sort_values("cooccur_pct", ascending=False)
+        )
+        partners = [
+            t for t in anchor_mates["teammate"].tolist()
+            if t in top_pokemon and t != anchor
+        ][:5]
+        if len(partners) < 5:
+            extras = [p for p in top_pokemon if p != anchor and p not in partners]
+            partners += extras[: 5 - len(partners)]
+        team = [anchor] + partners
+        for mon in team:
+            rows.append({"team_id": team_id, "pokemon": mon, "regulation": regulation})
+        team_id += 1
+
+    return pd.DataFrame(rows)
+
+
+def temporal_evaluate(
+    model: Recommender,
+    artifacts_root: Path,
+    counter_matrix: pd.DataFrame,
+    model_name: str,
+    train_regulation: str = "regg",
+    test_regulation: str = "regh",
+) -> dict[str, object]:
+    """Temporal split evaluation (CVTT).
+
+    Evaluates a model trained on train_regulation data against teams built from
+    test_regulation data. This measures whether the recommender generalises
+    across competitive seasons rather than just fitting to one meta snapshot.
+    """
+    train_teams = pd.read_csv(
+        artifacts_root / "eval" / "reconstruction_teams.csv"
+    )
+    train_result = evaluate_reconstruction(
+        model, train_teams, counter_matrix, model_name=f"{model_name}_train"
+    )
+
+    test_teams = build_temporal_teams(artifacts_root, regulation=test_regulation)
+    test_result = evaluate_reconstruction(
+        model, test_teams, counter_matrix, model_name=f"{model_name}_test"
+    )
+
+    return {
+        "model_name": model_name,
+        "train_regulation": train_regulation,
+        "test_regulation": test_regulation,
+        "train": train_result.__dict__,
+        "test": test_result.__dict__,
+        "hit_rate_5_delta": test_result.hit_rate_5 - train_result.hit_rate_5,
+        "ndcg_5_delta": test_result.ndcg_5 - train_result.ndcg_5,
+    }
+
+
 def write_eval_results(results: list[EvalResult], out_csv: Path, out_json: Path) -> None:
     rows = [r.__dict__ for r in results]
     write_csv(pd.DataFrame(rows), out_csv)
