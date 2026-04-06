@@ -8,3 +8,8 @@ tqdm
 streamlit
 pytest
 poke-env
+sentence-transformers
+spacy
+matplotlib
+seaborn
+ipywidgets
