@@ -17,3 +17,7 @@ Pokemon-Showdown/
 
 # OS/editor
 .DS_Store
+
+# Generated
+reports/
+artifacts/
