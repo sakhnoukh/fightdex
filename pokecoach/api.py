@@ -182,7 +182,7 @@ def get_win_probability(your_team: list[str], opp_team: list[str]) -> dict:
     }
 
 
-def run_battle_sim(your_team: list[str], opp_team: list[str], n: int = 100) -> dict:
+def run_battle_sim(your_team: list[str], opp_team: list[str], n: int = 400) -> dict:
     """Run simulated battles; falls back to analytical if Showdown is offline."""
     from pokecoach.simulation import run_team_sim
 

@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import math
-import random
 import socket
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,11 +15,10 @@ from pokecoach.models import BaseModel
 from pokecoach.utils import write_csv, write_json
 
 try:
-    from poke_env.player import RandomPlayer, SimpleHeuristicsPlayer, TeamPlayer
+    from poke_env.player import RandomPlayer, SimpleHeuristicsPlayer
 except Exception:  # pragma: no cover
     RandomPlayer = None
     SimpleHeuristicsPlayer = None
-    TeamPlayer = None
 
 
 @dataclass
@@ -49,30 +47,55 @@ def check_showdown_running(host: str = "localhost", port: int = 8000) -> bool:
         return False
 
 
+_ITEM_POOL = [
+    "Leftovers", "Life Orb", "Focus Sash", "Assault Vest", "Choice Scarf",
+    "Choice Specs", "Choice Band", "Lum Berry", "Sitrus Berry", "Rocky Helmet",
+    "Booster Energy", "Clear Amulet", "Safety Goggles", "Wide Lens", "Power Herb",
+]
+
+
 def _build_team_text(team: list[str], pastes: dict[str, str]) -> str:
-    chunks = [pastes.get(mon, f"{mon}\n- Protect\n- Taunt\n- U-turn\n- Helping Hand") for mon in team]
+    chunks = []
+    used_items: set[str] = set()
+    for mon in team:
+        paste = pastes.get(mon, f"{mon}\n- Protect\n- Taunt\n- U-turn\n- Helping Hand")
+        # Assign a unique item to satisfy VGC Item Clause (no duplicate held items)
+        for item in _ITEM_POOL:
+            if item not in used_items:
+                lines = paste.split("\n")
+                if " @ " in lines[0]:
+                    lines[0] = lines[0].split(" @ ")[0] + f" @ {item}"
+                paste = "\n".join(lines)
+                used_items.add(item)
+                break
+        chunks.append(paste)
     return "\n\n".join(chunks)
 
 
-async def _battle_real(team_text: str, tier: str) -> int:
-    if TeamPlayer is None or SimpleHeuristicsPlayer is None:
-        return random.choice([0, 1])
-    try:
-        from poke_env.ps_client.server_configuration import LocalhostServerConfiguration
-        player = TeamPlayer(
-            team=team_text,
-            battle_format=tier,
-            server_configuration=LocalhostServerConfiguration,
-        )
-        opponent = SimpleHeuristicsPlayer(
-            battle_format=tier,
-            server_configuration=LocalhostServerConfiguration,
-        )
-        await player.battle_against(opponent, n_battles=1)
-        return int(player.n_won_battles > 0)
-    except Exception:
-        # Keep local development unblocked when Showdown is unavailable.
-        return random.choice([0, 1])
+
+async def _run_battles_persistent(
+    your_text: str, opp_text: str, tier: str, n: int, batch_size: int = 50
+) -> int:
+    if SimpleHeuristicsPlayer is None:
+        raise RuntimeError("poke_env not installed")
+    from poke_env.ps_client.server_configuration import LocalhostServerConfiguration
+    player = SimpleHeuristicsPlayer(
+        team=your_text,
+        battle_format=tier,
+        server_configuration=LocalhostServerConfiguration,
+    )
+    opponent = SimpleHeuristicsPlayer(
+        team=opp_text,
+        battle_format=tier,
+        server_configuration=LocalhostServerConfiguration,
+    )
+    for batch_start in range(0, n, batch_size):
+        batch = min(batch_size, n - batch_start)
+        await player.battle_against(opponent, n_battles=batch)
+        done = batch_start + batch
+        wins = player.n_won_battles
+        print(f"  Battles: {done}/{n} — wins: {wins} ({wins/done*100:.1f}%)", flush=True)
+    return player.n_won_battles
 
 
 def _analytical_win_prob(your_team: list[str], opp_team: list[str], counter: pd.DataFrame) -> float:
@@ -90,7 +113,7 @@ def _analytical_win_prob(your_team: list[str], opp_team: list[str], counter: pd.
     return ys / (ys + os_) if (ys + os_) > 0 else 0.5
 
 
-def run_team_sim(your_team: list[str], opp_team: list[str], n: int = 100) -> dict:
+def run_team_sim(your_team: list[str], opp_team: list[str], n: int = 400) -> dict:
     """
     Run N battles between your_team and opp_team.
 
@@ -111,18 +134,13 @@ def run_team_sim(your_team: list[str], opp_team: list[str], n: int = 100) -> dic
     if check_showdown_running():
         tier = cfg.raw["regulation"]["showdown_tier"]
         your_text = _build_team_text(your_team, pastes)
-
-        async def _run_battles() -> int:
-            wins = 0
-            for _ in range(n):
-                wins += await _battle_real(your_text, tier)
-            return wins
-
+        opp_text = _build_team_text(opp_team, pastes)
         try:
-            wins = asyncio.run(_run_battles())
+            wins = asyncio.run(_run_battles_persistent(your_text, opp_text, tier, n))
             return {"wins": wins, "total": n, "win_rate": wins / max(1, n), "used_simulation": True}
-        except Exception:
-            pass  # fall through to analytical
+        except Exception as e:
+            print(f"Simulation error: {e}", flush=True)
+            # fall through to analytical
 
     # Analytical fallback
     counter_path = cfg.paths["artifacts_root"] / "features" / "counter_matrix.csv"
@@ -132,12 +150,12 @@ def run_team_sim(your_team: list[str], opp_team: list[str], n: int = 100) -> dic
     return {"wins": wins, "total": n, "win_rate": win_prob, "used_simulation": False}
 
 
-def _sample_base_teams(teams_df: pd.DataFrame, max_teams: int) -> list[list[str]]:
+def _sample_base_teams(teams_df: pd.DataFrame, max_teams: int, max_size: int = 5) -> list[list[str]]:
     base_teams: list[list[str]] = []
     grouped = teams_df.groupby("team_id")["pokemon"].apply(list).tolist()
     for team in grouped[:max_teams]:
         if len(team) >= 5:
-            base_teams.append(team[:5])
+            base_teams.append(team[:max_size])
     return base_teams
 
 
@@ -155,23 +173,26 @@ async def evaluate_model_simulation(
     if pastes_path.exists():
         pastes = json.loads(pastes_path.read_text())
 
-    base_teams = _sample_base_teams(teams, sizes["teams"])
+    # Treat each sampled tournament team as the opponent (full 6 mons)
+    opp_teams = _sample_base_teams(teams, sizes["teams"], max_size=6)
     total = 0
     wins = 0
     format_tier = tier or cfg.raw["regulation"]["showdown_tier"]
 
-    for base in base_teams:
-        rec = model.recommend(base, k=1)
+    for opp_team in opp_teams:
+        # Recommend a full counter-team against this specific opponent
+        rec = model.recommend([], opponent_context=opp_team, k=6)
         if not rec:
             continue
-        completed = base + [rec[0]]
-        team_text = _build_team_text(completed, pastes)
-        for _ in range(sizes["battles_per_team"]):
-            result = await _battle_real(team_text, tier=format_tier)
-            total += 1
-            wins += result
-            if hasattr(model, "update_reward"):
-                model.update_reward(rec[0], result)
+        rec_text = _build_team_text(rec, pastes)
+        opp_text = _build_team_text(opp_team, pastes)
+        n_battles = sizes["battles_per_team"]
+        result_wins = await _run_battles_persistent(rec_text, opp_text, format_tier, n_battles)
+        wins += result_wins
+        total += n_battles
+        if hasattr(model, "update_reward"):
+            for mon in rec:
+                model.update_reward(mon, result_wins / max(1, n_battles))
     return SimulationResult(model_name=model_name, wins=wins, total=total)
 
 

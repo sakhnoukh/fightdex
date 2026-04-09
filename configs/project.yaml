@@ -44,10 +44,10 @@ simulation:
   sizes:
     smoke:
       teams: 10
-      battles_per_team: 5
+      battles_per_team: 20
     dev:
       teams: 40
-      battles_per_team: 20
+      battles_per_team: 50
     final:
       teams: 200
-      battles_per_team: 50
+      battles_per_team: 100

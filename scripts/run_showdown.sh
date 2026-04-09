@@ -8,4 +8,4 @@ if [ ! -d "Pokemon-Showdown" ]; then
 fi
 
 cd Pokemon-Showdown
-npm run start
+node pokemon-showdown start --no-security

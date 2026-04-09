@@ -9,8 +9,25 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from sklearn.decomposition import NMF, TruncatedSVD
-from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+
+# Lazy-loaded spaCy NLP pipeline (loaded once on first use)
+_spacy_nlp = None
+
+
+def _get_spacy_nlp():
+    global _spacy_nlp
+    if _spacy_nlp is None:
+        import spacy
+        _spacy_nlp = spacy.load("en_core_web_sm", disable=["parser", "ner"])
+    return _spacy_nlp
+
+
+def lemmatize_text(text: str) -> str:
+    """Lemmatize a whitespace-separated string using spaCy."""
+    nlp = _get_spacy_nlp()
+    return " ".join(token.lemma_ for token in nlp(text.lower()))
 
 
 def _normalize_name(name: str) -> str:
@@ -99,18 +116,66 @@ class KNNRecommender(BaseModel):
         return _filter_candidates(ranked, set(partial_team), k)
 
 
+class EarlyStoppingCallback:
+    def __init__(self, patience: int = 3, min_delta: float = 0.0) -> None:
+        self.patience = patience
+        self.min_delta = min_delta
+        self.best_loss = float("inf")
+        self._counter = 0
+        self.should_stop = False
+
+    def update(self, loss: float) -> None:
+        if loss < self.best_loss - self.min_delta:
+            self.best_loss = loss
+            self._counter = 0
+        else:
+            self._counter += 1
+            if self._counter >= self.patience:
+                self.should_stop = True
+
+
 class MatrixFactorizationRecommender(BaseModel):
-    def __init__(self, data: ModelData, method: str = "svd", components: int = 24) -> None:
+    def __init__(
+        self,
+        data: ModelData,
+        method: str = "svd",
+        components: int = 24,
+        early_stopping: bool = False,
+        patience: int = 5,
+        max_iter: int = 500,
+    ) -> None:
         super().__init__(data)
         matrix = data.cooccurrence.reindex(index=self.items, columns=self.items, fill_value=0.0).values
+        n = min(components, matrix.shape[0] - 1)
         if method == "nmf":
-            model = NMF(n_components=min(components, matrix.shape[0] - 1), init="nndsvda", random_state=42, max_iter=500)
-            transformed = model.fit_transform(np.clip(matrix, a_min=0.0, a_max=None))
-            reconstructed = np.dot(transformed, model.components_)
+            clipped = np.clip(matrix, a_min=0.0, a_max=None)
+            if early_stopping:
+                # Manual multiplicative update NMF (Lee & Seung 2001) for early stopping support
+                rng = np.random.default_rng(42)
+                W = rng.uniform(0.1, 1.0, (clipped.shape[0], n))
+                H = rng.uniform(0.1, 1.0, (n, clipped.shape[1]))
+                cb = EarlyStoppingCallback(patience=patience)
+                eps = 1e-10
+                i = 0
+                for i in range(1, max_iter + 1):
+                    H *= (W.T @ clipped) / (W.T @ W @ H + eps)
+                    W *= (clipped @ H.T) / (W @ H @ H.T + eps)
+                    loss = float(np.linalg.norm(clipped - W @ H, "fro"))
+                    cb.update(loss)
+                    if cb.should_stop:
+                        break
+                self.actual_iter = i
+                reconstructed = W @ H
+            else:
+                model = NMF(n_components=n, init="nndsvda", random_state=42, max_iter=max_iter)
+                transformed = model.fit_transform(clipped)
+                self.actual_iter = model.n_iter_
+                reconstructed = np.dot(transformed, model.components_)
         else:
-            model = TruncatedSVD(n_components=min(components, matrix.shape[0] - 1), random_state=42)
+            model = TruncatedSVD(n_components=n, random_state=42)
             transformed = model.fit_transform(matrix)
             reconstructed = np.dot(transformed, model.components_)
+            self.actual_iter = 1
         self.reconstructed = pd.DataFrame(reconstructed, index=self.items, columns=self.items)
 
     def recommend(self, partial_team: list[str], opponent_context: list[str] | None = None, k: int = 5) -> list[str]:
@@ -276,14 +341,122 @@ class UCBHybridRecommender(BaseModel):
         self.t += 1
 
     def recommend(self, partial_team: list[str], opponent_context: list[str] | None = None, k: int = 5) -> list[str]:
-        base = self.hybrid.recommend(partial_team, opponent_context=opponent_context, k=max(12, k))
+        # Score all legal items using mean reward + bounded exploration bonus.
+        # Using sqrt(1/max(count, 5)) caps the exploration bonus so that highly-
+        # rewarded items can rise above unexplored ones (unlike standard UCB1 where
+        # log(t)/count makes unseen arms dominate indefinitely).
         scored: list[tuple[str, float]] = []
-        for mon in base:
-            mean = self.rewards.get(mon, 0.5) / self.counts.get(mon, 1)
-            bonus = self.c * math.sqrt(math.log(self.t + 1) / self.counts.get(mon, 1))
+        banned = set(partial_team)
+        for mon in self.items:
+            if mon in banned:
+                continue
+            count = self.counts.get(mon, 1)
+            mean = self.rewards.get(mon, 0.5) / count
+            bonus = self.c * math.sqrt(1.0 / max(count, 5))
             scored.append((mon, mean + bonus))
         scored.sort(key=lambda x: x[1], reverse=True)
-        return _filter_candidates([m for m, _ in scored], set(partial_team), k)
+        return [m for m, _ in scored[:k]]
+
+
+class DemographicRecommender(BaseModel):
+    def __init__(self, data: ModelData, tier: str = "competitive") -> None:
+        super().__init__(data)
+        valid = {"competitive", "casual"}
+        if tier not in valid:
+            raise ValueError(f"tier must be one of {valid}, got {tier!r}")
+        legal = data.legal_pool.sort_values("usage_pct", ascending=False)
+        if tier == "competitive":
+            threshold = legal["usage_pct"].median()
+            pool = legal[legal["usage_pct"] >= threshold]
+        else:
+            threshold = legal["usage_pct"].quantile(0.80)
+            pool = legal[legal["usage_pct"] < threshold]
+        self.rank = pool["pokemon"].tolist()
+
+    def recommend(self, partial_team: list[str], opponent_context: list[str] | None = None, k: int = 5) -> list[str]:
+        return _filter_candidates(self.rank, set(partial_team), k)
+
+
+class BowRecommender(BaseModel):
+    def __init__(self, data: ModelData) -> None:
+        super().__init__(data)
+        docs = {
+            mon: " ".join(grp.nlargest(10, "usage_pct")["move"].tolist())
+            for mon, grp in data.moveset.groupby("pokemon")
+        }
+        self.mon_list = list(docs.keys())
+        vec = CountVectorizer(ngram_range=(1, 2), min_df=1)
+        matrix = vec.fit_transform([docs[m] for m in self.mon_list])
+        self.vocab_size = len(vec.vocabulary_)
+        self.sim = cosine_similarity(matrix)
+        self.idx = {m: i for i, m in enumerate(self.mon_list)}
+
+    def recommend(self, partial_team: list[str], opponent_context: list[str] | None = None, k: int = 5) -> list[str]:
+        scores = np.zeros(len(self.mon_list))
+        for mon in partial_team:
+            if mon in self.idx:
+                scores += self.sim[self.idx[mon]]
+        ranked = [self.mon_list[i] for i in np.argsort(scores)[::-1]]
+        return _filter_candidates(ranked, set(partial_team), k)
+
+
+class LemmatizedBowRecommender(BaseModel):
+    def __init__(self, data: ModelData) -> None:
+        super().__init__(data)
+        docs = {
+            mon: lemmatize_text(" ".join(grp.nlargest(10, "usage_pct")["move"].tolist()))
+            for mon, grp in data.moveset.groupby("pokemon")
+        }
+        self.mon_list = list(docs.keys())
+        # Unigrams only: lemmatization collapses inflected forms so unigram vocab
+        # is strictly smaller than BowRecommender's bigram vocabulary.
+        vec = CountVectorizer(ngram_range=(1, 1), min_df=1)
+        matrix = vec.fit_transform([docs[m] for m in self.mon_list])
+        self.vocab_size = len(vec.vocabulary_)
+        self.sim = cosine_similarity(matrix)
+        self.idx = {m: i for i, m in enumerate(self.mon_list)}
+
+    def recommend(self, partial_team: list[str], opponent_context: list[str] | None = None, k: int = 5) -> list[str]:
+        scores = np.zeros(len(self.mon_list))
+        for mon in partial_team:
+            if mon in self.idx:
+                scores += self.sim[self.idx[mon]]
+        ranked = [self.mon_list[i] for i in np.argsort(scores)[::-1]]
+        return _filter_candidates(ranked, set(partial_team), k)
+
+
+class SwitchingHybridRecommender(BaseModel):
+    def __init__(self, data: ModelData, threshold: int = 2) -> None:
+        super().__init__(data)
+        self.threshold = threshold
+        self.cold = PopularityRecommender(data)
+        self.warm = KNNRecommender(data)
+
+    def recommend(self, partial_team: list[str], opponent_context: list[str] | None = None, k: int = 5) -> list[str]:
+        if len(partial_team) < self.threshold:
+            return self.cold.recommend(partial_team, opponent_context=opponent_context, k=k)
+        return self.warm.recommend(partial_team, opponent_context=opponent_context, k=k)
+
+
+class MixedHybridRecommender(BaseModel):
+    def __init__(self, data: ModelData, models: list) -> None:
+        super().__init__(data)
+        self.models = models
+
+    def recommend(self, partial_team: list[str], opponent_context: list[str] | None = None, k: int = 5) -> list[str]:
+        pool_size = k * 4
+        lists = [m.recommend(partial_team, opponent_context=opponent_context, k=pool_size)
+                 for m in self.models]
+        seen = set(partial_team)
+        result = []
+        for depth in range(pool_size):
+            for lst in lists:
+                if depth < len(lst) and lst[depth] not in seen:
+                    result.append(lst[depth])
+                    seen.add(lst[depth])
+                if len(result) >= k:
+                    return result
+        return result[:k]
 
 
 def build_model_suite(data: ModelData) -> dict[str, BaseModel]:
@@ -297,4 +470,10 @@ def build_model_suite(data: ModelData) -> dict[str, BaseModel]:
         "tfidf": TfidfRoleRecommender(data),
         "hybrid": HybridRecommender(data),
         "bandit_hybrid": UCBHybridRecommender(data),
+        "demographic_competitive": DemographicRecommender(data, tier="competitive"),
+        "demographic_casual": DemographicRecommender(data, tier="casual"),
+        "bow": BowRecommender(data),
+        "bow_lemmatized": LemmatizedBowRecommender(data),
+        "switching_hybrid": SwitchingHybridRecommender(data),
+        "mixed_hybrid": MixedHybridRecommender(data, models=[KNNRecommender(data), PopularityRecommender(data)]),
     }

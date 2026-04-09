@@ -626,15 +626,15 @@ Estimated win rate: <span style="color:{color};font-weight:bold">{pct}%</span>
             )
 
             if st.button(
-                "⚔️ Run 100 simulated battles",
+                "⚔️ Run 400 simulated battles",
                 disabled=not showdown_ok,
                 help=(
-                    "Requires Showdown server. Takes ~2 minutes."
+                    "Requires Showdown server. Takes ~8 minutes."
                     if showdown_ok
                     else "Start Showdown server first (sidebar)."
                 ),
             ):
-                with st.spinner("Running 100 battles… this takes ~2 minutes."):
+                with st.spinner("Running 400 battles… this takes ~8 minutes."):
                     from pokecoach.api import run_battle_sim
 
                     all_your = st.session_state.your_team + [

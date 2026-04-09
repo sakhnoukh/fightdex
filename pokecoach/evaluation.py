@@ -44,6 +44,39 @@ def ndcg_at_k(y_true: list[str], y_pred: list[list[str]], k: int = 5) -> float:
     return total / max(1, len(y_true))
 
 
+def binary_classification_metrics(
+    y_true: list[str], y_pred: list[list[str]], k: int = 5
+) -> dict[str, float]:
+    """Binary classification view of recommendation (1 relevant item per query).
+
+    With exactly one relevant item per query, precision and recall are identical
+    (both equal the hit rate), and F1 = that same value.
+    """
+    hits = sum(1 for t, p in zip(y_true, y_pred) if t in p[:k])
+    n = max(1, len(y_true))
+    precision = hits / n
+    recall = hits / n
+    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+    return {"precision": precision, "recall": recall, "f1": f1}
+
+
+def rmse_score(y_true: list[float], y_pred: list[float]) -> float:
+    if len(y_true) == 0:
+        raise ValueError("y_true is empty")
+    if len(y_true) != len(y_pred):
+        raise ValueError("y_true and y_pred must have the same length")
+    errors = [(t - p) ** 2 for t, p in zip(y_true, y_pred)]
+    return float(np.sqrt(np.mean(errors)))
+
+
+def mae_score(y_true: list[float], y_pred: list[float]) -> float:
+    if len(y_true) == 0:
+        raise ValueError("y_true is empty")
+    if len(y_true) != len(y_pred):
+        raise ValueError("y_true and y_pred must have the same length")
+    return float(np.mean([abs(t - p) for t, p in zip(y_true, y_pred)]))
+
+
 def catalog_coverage(predictions: list[list[str]], item_pool: set[str]) -> float:
     recommended = {item for recs in predictions for item in recs}
     return len(recommended & item_pool) / max(1, len(item_pool))

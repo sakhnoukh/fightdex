@@ -107,7 +107,34 @@ def build_counter_matrix(cfg: ProjectConfig, legal: pd.DataFrame) -> pd.DataFram
     return matrix
 
 
-def build_canonical_pastes(moveset_df: pd.DataFrame, top_moves: int = 4) -> dict[str, str]:
+def _build_ability_lookup(data_root: Path) -> dict[str, str]:
+    """Returns {pokeapi_identifier: showdown_ability_name} for slot-1 abilities."""
+    pokemon_csv = pd.read_csv(data_root / "pokeapi" / "pokemon.csv")
+    abilities_csv = pd.read_csv(data_root / "pokeapi" / "abilities.csv")
+    pokemon_abilities_csv = pd.read_csv(data_root / "pokeapi" / "pokemon_abilities.csv")
+
+    poke_id_to_name = dict(zip(pokemon_csv["id"], pokemon_csv["identifier"]))
+    ability_id_to_name = dict(zip(abilities_csv["id"], abilities_csv["identifier"]))
+
+    lookup: dict[str, str] = {}
+    slot1 = pokemon_abilities_csv[
+        (pokemon_abilities_csv["slot"] == 1) &
+        (pokemon_abilities_csv["is_hidden"] == 0)
+    ]
+    for _, row in slot1.iterrows():
+        pname = poke_id_to_name.get(row["pokemon_id"], "")
+        aname = ability_id_to_name.get(row["ability_id"], "")
+        if pname and aname:
+            # Convert pokeapi format (inner-focus) → Showdown format (Inner Focus)
+            lookup[pname] = aname.replace("-", " ").title()
+    return lookup
+
+
+def build_canonical_pastes(
+    moveset_df: pd.DataFrame,
+    ability_lookup: dict[str, str] | None = None,
+    top_moves: int = 4,
+) -> dict[str, str]:
     pastes: dict[str, str] = {}
     for name, group in moveset_df.groupby("pokemon"):
         moves = (
@@ -118,7 +145,9 @@ def build_canonical_pastes(moveset_df: pd.DataFrame, top_moves: int = 4) -> dict
         )
         if not moves:
             continue
-        lines = [f"{name} @ Leftovers", "Ability: Pressure", "Tera Type: Normal", "EVs: 252 HP / 252 Atk / 4 Spe", "Adamant Nature"]
+        norm = name.lower().replace(" ", "-").replace(".", "").replace("'", "")
+        ability = (ability_lookup or {}).get(norm, "Pressure")
+        lines = [f"{name} @ Leftovers", f"Ability: {ability}", "Tera Type: Normal", "EVs: 252 HP / 252 Atk / 4 Spe", "Adamant Nature"]
         lines.extend([f"- {m}" for m in moves])
         pastes[name] = "\n".join(lines)
     return pastes
@@ -149,7 +178,8 @@ def run_preprocess(cfg: ProjectConfig) -> dict[str, Path]:
     content = build_content_features(cfg, legal)
     counter = build_counter_matrix(cfg, legal)
     pokemon_types = build_pokemon_types(cfg, legal)
-    pastes = build_canonical_pastes(moveset)
+    ability_lookup = _build_ability_lookup(cfg.paths["data_root"])
+    pastes = build_canonical_pastes(moveset, ability_lookup=ability_lookup)
     reconstruction = build_reconstruction_dataset(cfg)
 
     legal_out = cfg.paths["artifacts_root"] / "features" / "legal_pool.csv"
