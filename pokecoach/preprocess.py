@@ -130,6 +130,49 @@ def _build_ability_lookup(data_root: Path) -> dict[str, str]:
     return lookup
 
 
+# Competitive ability overrides for VGC — covers Pokémon missing from the PokeAPI
+# slot-1 lookup (which would incorrectly fall back to "Pressure") and Pokémon
+# whose slot-1 ability is legal but non-competitive.
+_COMPETITIVE_ABILITIES: dict[str, str] = {
+    # ── Missing from PokeAPI lookup (would get fallback "Pressure") ──────────
+    "tornadus": "Prankster",
+    "thundurus": "Prankster",
+    "landorus": "Intimidate",
+    "indeedee-f": "Psychic Surge",
+    "tatsugiri": "Commander",
+    "maushold": "Friend Guard",
+    "mimikyu": "Disguise",
+    "urshifu": "Unseen Fist",
+    "ogerpon-wellspring": "Water Absorb",
+    "ogerpon-cornerstone": "Sturdy",
+    "ogerpon-hearthflame": "Mold Breaker",
+    "necrozma-dawn-wings": "Prism Armor",
+    "necrozma-dusk-mane": "Prism Armor",
+    "basculegion": "Swift Swim",
+    # ── Slot-1 is non-competitive — override to the used competitive ability ──
+    "incineroar": "Intimidate",
+    "rillaboom": "Grassy Surge",
+    "pelipper": "Drizzle",
+    "politoed": "Drizzle",
+    "amoonguss": "Regenerator",
+    "torkoal": "Drought",
+    "ninetales-alola": "Snow Warning",
+    "hippowdon": "Sand Stream",
+    "tyranitar": "Sand Stream",
+    "excadrill": "Sand Rush",
+    "whimsicott": "Prankster",
+    "grimmsnarl": "Prankster",
+    "porygon2": "Download",
+    "dusclops": "Frisk",
+    "gothitelle": "Shadow Tag",
+    "amoonguss": "Regenerator",
+    "hatterene": "Magic Bounce",
+    "aromatisse": "Aroma Veil",
+    "sylveon": "Pixilate",
+    "togekiss": "Serene Grace",
+}
+
+
 def build_canonical_pastes(
     moveset_df: pd.DataFrame,
     ability_lookup: dict[str, str] | None = None,
@@ -146,7 +189,11 @@ def build_canonical_pastes(
         if not moves:
             continue
         norm = name.lower().replace(" ", "-").replace(".", "").replace("'", "")
-        ability = (ability_lookup or {}).get(norm, "Pressure")
+        ability = (
+            _COMPETITIVE_ABILITIES.get(norm)
+            or (ability_lookup or {}).get(norm)
+            or "Pressure"
+        )
         lines = [f"{name} @ Leftovers", f"Ability: {ability}", "Tera Type: Normal", "EVs: 252 HP / 252 Atk / 4 Spe", "Adamant Nature"]
         lines.extend([f"- {m}" for m in moves])
         pastes[name] = "\n".join(lines)

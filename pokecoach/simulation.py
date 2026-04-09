@@ -15,8 +15,10 @@ from pokecoach.models import BaseModel
 from pokecoach.utils import write_csv, write_json
 
 try:
+    from poke_env import AccountConfiguration
     from poke_env.player import RandomPlayer, SimpleHeuristicsPlayer
 except Exception:  # pragma: no cover
+    AccountConfiguration = None
     RandomPlayer = None
     SimpleHeuristicsPlayer = None
 
@@ -78,23 +80,31 @@ async def _run_battles_persistent(
 ) -> int:
     if SimpleHeuristicsPlayer is None:
         raise RuntimeError("poke_env not installed")
+    import uuid
     from poke_env.ps_client.server_configuration import LocalhostServerConfiguration
+    run_id = uuid.uuid4().hex[:8]
     player = SimpleHeuristicsPlayer(
+        account_configuration=AccountConfiguration(f"Coach_{run_id}_p1", None),
         team=your_text,
         battle_format=tier,
         server_configuration=LocalhostServerConfiguration,
     )
     opponent = SimpleHeuristicsPlayer(
+        account_configuration=AccountConfiguration(f"Coach_{run_id}_p2", None),
         team=opp_text,
         battle_format=tier,
         server_configuration=LocalhostServerConfiguration,
     )
-    for batch_start in range(0, n, batch_size):
-        batch = min(batch_size, n - batch_start)
-        await player.battle_against(opponent, n_battles=batch)
-        done = batch_start + batch
-        wins = player.n_won_battles
-        print(f"  Battles: {done}/{n} — wins: {wins} ({wins/done*100:.1f}%)", flush=True)
+    try:
+        for batch_start in range(0, n, batch_size):
+            batch = min(batch_size, n - batch_start)
+            await player.battle_against(opponent, n_battles=batch)
+            done = batch_start + batch
+            wins = player.n_won_battles
+            print(f"  Battles: {done}/{n} — wins: {wins} ({wins/done*100:.1f}%)", flush=True)
+    finally:
+        await player.ps_client.stop_listening()
+        await opponent.ps_client.stop_listening()
     return player.n_won_battles
 
 
