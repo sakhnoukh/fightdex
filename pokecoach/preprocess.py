@@ -137,7 +137,8 @@ _COMPETITIVE_ABILITIES: dict[str, str] = {
     # ── Missing from PokeAPI lookup (would get fallback "Pressure") ──────────
     "tornadus": "Prankster",
     "thundurus": "Prankster",
-    "landorus": "Intimidate",
+    "landorus": "Sand Force",
+    "landorus-therian": "Intimidate",
     "indeedee-f": "Psychic Surge",
     "tatsugiri": "Commander",
     "maushold": "Friend Guard",
@@ -149,6 +150,20 @@ _COMPETITIVE_ABILITIES: dict[str, str] = {
     "necrozma-dawn-wings": "Prism Armor",
     "necrozma-dusk-mane": "Prism Armor",
     "basculegion": "Swift Swim",
+    "thundurus-therian": "Volt Absorb",
+    "calyrex-shadow": "As One (Spectrier)",
+    "calyrex-ice": "As One (Glastrier)",
+    "ursaluna-bloodmoon": "Mind's Eye",
+    "lilligant-hisui": "Chlorophyll",
+    "arcanine-hisui": "Intimidate",
+    "goodra-hisui": "Sap Sipper",
+    "moltres-galar": "Berserk",
+    "zapdos-galar": "Defiant",
+    "zoroark-hisui": "Illusion",
+    "weezing-galar": "Neutralizing Gas",
+    "muk-alola": "Poison Touch",
+    "zacian-crowned": "Intrepid Sword",
+    "zamazenta-crowned": "Dauntless Shield",
     # ── Slot-1 is non-competitive — override to the used competitive ability ──
     "incineroar": "Intimidate",
     "rillaboom": "Grassy Surge",
@@ -173,6 +188,44 @@ _COMPETITIVE_ABILITIES: dict[str, str] = {
 }
 
 
+# Pokémon that require a specific held item to maintain their form.
+_REQUIRED_ITEMS: dict[str, str] = {
+    "palkia-origin": "Lustrous Globe",
+    "dialga-origin": "Adamant Crystal",
+    "giratina-origin": "Griseous Core",
+    "zacian-crowned": "Rusted Sword",
+    "zamazenta-crowned": "Rusted Shield",
+    "ogerpon-wellspring": "Wellspring Mask",
+    "ogerpon-cornerstone": "Cornerstone Mask",
+    "ogerpon-hearthflame": "Hearthflame Mask",
+    "calyrex-shadow": "Reins of Unity",
+    "calyrex-ice": "Reins of Unity",
+    "dialga-origin": "Adamant Crystal",
+}
+
+# Restricted legendaries for VGC Reg G (max 1 per team).
+RESTRICTED_POKEMON: set[str] = {
+    "mewtwo", "lugia", "ho-oh", "kyogre", "groudon", "rayquaza",
+    "dialga", "dialga-origin", "palkia", "palkia-origin", "giratina", "giratina-origin",
+    "reshiram", "zekrom", "kyurem", "kyurem-white", "kyurem-black",
+    "xerneas", "yveltal", "zygarde",
+    "cosmog", "cosmoem", "solgaleo", "lunala",
+    "necrozma", "necrozma-dusk-mane", "necrozma-dawn-wings",
+    "zacian", "zacian-crowned", "zamazenta", "zamazenta-crowned",
+    "eternatus", "calyrex", "calyrex-shadow", "calyrex-ice",
+    "koraidon", "miraidon", "terapagos",
+}
+
+# Pokémon that require a specific Tera Type.
+_REQUIRED_TERA: dict[str, str] = {
+    "terapagos": "Stellar",
+    "ogerpon": "Grass",
+    "ogerpon-wellspring": "Water",
+    "ogerpon-cornerstone": "Rock",
+    "ogerpon-hearthflame": "Fire",
+}
+
+
 def build_canonical_pastes(
     moveset_df: pd.DataFrame,
     ability_lookup: dict[str, str] | None = None,
@@ -194,7 +247,9 @@ def build_canonical_pastes(
             or (ability_lookup or {}).get(norm)
             or "Pressure"
         )
-        lines = [f"{name} @ Leftovers", f"Ability: {ability}", "Tera Type: Normal", "EVs: 252 HP / 252 Atk / 4 Spe", "Adamant Nature"]
+        item = _REQUIRED_ITEMS.get(norm, "Leftovers")
+        tera = _REQUIRED_TERA.get(norm, "Normal")
+        lines = [f"{name} @ {item}", f"Ability: {ability}", f"Tera Type: {tera}", "EVs: 252 HP / 252 Atk / 4 Spe", "Adamant Nature"]
         lines.extend([f"- {m}" for m in moves])
         pastes[name] = "\n".join(lines)
     return pastes

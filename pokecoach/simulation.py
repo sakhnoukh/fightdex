@@ -12,15 +12,24 @@ import pandas as pd
 
 from pokecoach.config import ProjectConfig
 from pokecoach.models import BaseModel
+from pokecoach.preprocess import _REQUIRED_ITEMS, RESTRICTED_POKEMON
 from pokecoach.utils import write_csv, write_json
 
 try:
     from poke_env import AccountConfiguration
     from poke_env.player import RandomPlayer, SimpleHeuristicsPlayer
+    from poke_env.ps_client.server_configuration import ServerConfiguration
+    _SHOWDOWN_PORT = 8088
+    LocalServerConfig = ServerConfiguration(
+        f"ws://localhost:{_SHOWDOWN_PORT}/showdown/websocket",
+        "https://play.pokemonshowdown.com/action.php?",
+    )
 except Exception:  # pragma: no cover
     AccountConfiguration = None
     RandomPlayer = None
     SimpleHeuristicsPlayer = None
+    LocalServerConfig = None
+    _SHOWDOWN_PORT = 8088
 
 
 @dataclass
@@ -40,13 +49,17 @@ class SimulationResult:
         return 1.96 * math.sqrt((p * (1 - p)) / n)
 
 
-def check_showdown_running(host: str = "localhost", port: int = 8000) -> bool:
+def check_showdown_running(host: str = "localhost", port: int = 8088) -> bool:
     """Return True if a Showdown server is reachable at host:port."""
     try:
         with socket.create_connection((host, port), timeout=1):
             return True
     except OSError:
         return False
+
+
+def _count_restricted(team: list[str]) -> int:
+    return sum(1 for m in team if m.lower().replace(" ", "-").replace(".", "").replace("'", "") in RESTRICTED_POKEMON)
 
 
 _ITEM_POOL = [
@@ -61,15 +74,25 @@ def _build_team_text(team: list[str], pastes: dict[str, str]) -> str:
     used_items: set[str] = set()
     for mon in team:
         paste = pastes.get(mon, f"{mon}\n- Protect\n- Taunt\n- U-turn\n- Helping Hand")
-        # Assign a unique item to satisfy VGC Item Clause (no duplicate held items)
-        for item in _ITEM_POOL:
-            if item not in used_items:
-                lines = paste.split("\n")
-                if " @ " in lines[0]:
-                    lines[0] = lines[0].split(" @ ")[0] + f" @ {item}"
-                paste = "\n".join(lines)
-                used_items.add(item)
-                break
+        norm = mon.lower().replace(" ", "-").replace(".", "").replace("'", "")
+        required_item = _REQUIRED_ITEMS.get(norm)
+        if required_item:
+            # This Pokémon needs a specific item for its form — keep it
+            lines = paste.split("\n")
+            if " @ " in lines[0]:
+                lines[0] = lines[0].split(" @ ")[0] + f" @ {required_item}"
+            paste = "\n".join(lines)
+            used_items.add(required_item)
+        else:
+            # Assign a unique item to satisfy VGC Item Clause (no duplicate held items)
+            for item in _ITEM_POOL:
+                if item not in used_items:
+                    lines = paste.split("\n")
+                    if " @ " in lines[0]:
+                        lines[0] = lines[0].split(" @ ")[0] + f" @ {item}"
+                    paste = "\n".join(lines)
+                    used_items.add(item)
+                    break
         chunks.append(paste)
     return "\n\n".join(chunks)
 
@@ -81,19 +104,18 @@ async def _run_battles_persistent(
     if SimpleHeuristicsPlayer is None:
         raise RuntimeError("poke_env not installed")
     import uuid
-    from poke_env.ps_client.server_configuration import LocalhostServerConfiguration
     run_id = uuid.uuid4().hex[:8]
     player = SimpleHeuristicsPlayer(
         account_configuration=AccountConfiguration(f"Coach_{run_id}_p1", None),
         team=your_text,
         battle_format=tier,
-        server_configuration=LocalhostServerConfiguration,
+        server_configuration=LocalServerConfig,
     )
     opponent = SimpleHeuristicsPlayer(
         account_configuration=AccountConfiguration(f"Coach_{run_id}_p2", None),
         team=opp_text,
         battle_format=tier,
-        server_configuration=LocalhostServerConfiguration,
+        server_configuration=LocalServerConfig,
     )
     try:
         for batch_start in range(0, n, batch_size):
@@ -190,9 +212,25 @@ async def evaluate_model_simulation(
     format_tier = tier or cfg.raw["regulation"]["showdown_tier"]
 
     for opp_team in opp_teams:
+        # Skip opponent teams that already violate the restricted limit
+        if _count_restricted(opp_team) > 1:
+            continue
         # Recommend a full counter-team against this specific opponent
         rec = model.recommend([], opponent_context=opp_team, k=6)
         if not rec:
+            continue
+        # Enforce restricted Pokémon limit: keep first restricted, drop extras
+        cleaned: list[str] = []
+        restricted_used = False
+        for mon in rec:
+            norm = mon.lower().replace(" ", "-").replace(".", "").replace("'", "")
+            if norm in RESTRICTED_POKEMON:
+                if restricted_used:
+                    continue
+                restricted_used = True
+            cleaned.append(mon)
+        rec = cleaned[:6]
+        if len(rec) < 4:
             continue
         rec_text = _build_team_text(rec, pastes)
         opp_text = _build_team_text(opp_team, pastes)
@@ -242,11 +280,66 @@ def run_simulation_sync(
     return asyncio.run(run_simulation(cfg, models, mode=mode, tier=tier))
 
 
+_SMOKE_TEAM = """
+Pikachu @ Light Ball
+Ability: Static
+Level: 50
+EVs: 252 SpA / 4 SpD / 252 Spe
+Timid Nature
+- Thunderbolt
+- Volt Switch
+- Surf
+- Protect
+
+Charizard @ Life Orb
+Ability: Blaze
+Level: 50
+EVs: 252 SpA / 4 SpD / 252 Spe
+Timid Nature
+- Heat Wave
+- Air Slash
+- Dragon Pulse
+- Protect
+
+Garchomp @ Focus Sash
+Ability: Rough Skin
+Level: 50
+EVs: 252 Atk / 4 SpD / 252 Spe
+Jolly Nature
+- Earthquake
+- Dragon Claw
+- Rock Slide
+- Protect
+
+Rillaboom @ Assault Vest
+Ability: Grassy Surge
+Level: 50
+EVs: 252 Atk / 252 HP / 4 SpD
+Adamant Nature
+- Grassy Glide
+- Wood Hammer
+- Knock Off
+- U-turn
+""".strip()
+
+
 async def simulation_smoke_test(tier: str = "gen9vgc2024regg") -> bool:
-    if RandomPlayer is None:
+    if RandomPlayer is None or AccountConfiguration is None:
         return False
-    p1 = RandomPlayer(battle_format=tier)
-    p2 = RandomPlayer(battle_format=tier)
+    import uuid
+    tag = uuid.uuid4().hex[:8]
+    p1 = RandomPlayer(
+        account_configuration=AccountConfiguration(f"Smoke_{tag}_p1", None),
+        battle_format=tier,
+        team=_SMOKE_TEAM,
+        server_configuration=LocalServerConfig,
+    )
+    p2 = RandomPlayer(
+        account_configuration=AccountConfiguration(f"Smoke_{tag}_p2", None),
+        battle_format=tier,
+        team=_SMOKE_TEAM,
+        server_configuration=LocalServerConfig,
+    )
     await p1.battle_against(p2, n_battles=1)
     return True
 
